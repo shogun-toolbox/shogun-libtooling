@@ -28,7 +28,6 @@ static cl::extrahelp MoreHelp("\nMore help text...\n");
 auto LabelMatcher = memberExpr(member(hasName("m_labels"))).bind("func");
 
 std::set<std::string> func_names;
-
 class labels_matcher : public MatchFinder::MatchCallback
 {
 public:
@@ -40,7 +39,6 @@ public:
     // We do not want to convert header files!
     if (!FS || !Context->getSourceManager().isWrittenInMainFile(FS->getLocStart()))
       return;
-
     const auto &SM = Result.SourceManager;
     const auto &Loc = FS->getLocStart();
     auto ast_list = Context->getParents(*FS);
@@ -56,37 +54,57 @@ public:
       if (auto method = node.get<CXXMethodDecl>())
       {
         std::string func_name = method->getNameAsString();
-        auto node_parents = Context->getParents(node);
         std::string record_name = method->getParent()->getNameAsString();
 
-        func_name = record_name + "::" + func_name;
-        if (func_names.find(func_name) == func_names.end())
+        auto record = method->getParent();
+        bool is_derived_from_machine = false;
+
+        llvm::SmallPtrSet<const CXXRecordDecl *, 4> Bases;
+        auto Collect = [&Bases](const CXXRecordDecl *Base) {
+          Bases.insert(Base);
+          return true;
+        };
+        record->forallBases(Collect);
+        for (auto &&base : Bases)
         {
-          func_names.insert(func_name);
-          llvm::outs() << func_name << "\n";
-          break;
-        }
-        else
-        {
-          auto node_parents = Context->getParents(node);
-          for (const auto &sub_node : node_parents)
+          if (base->getNameAsString() == "Machine")
           {
-            nodes.push(sub_node);
+            is_derived_from_machine = true;
+            break;
           }
+        }
+        if (is_derived_from_machine)
+        {
+          func_name = record_name + "::" + func_name;
+          if (func_names.find(func_name) == func_names.end())
+          {
+            func_names.insert(func_name);
+            llvm::outs() << func_name << "\n";
+          }
+        }
+        break;
+      }
+      else
+      {
+        auto node_parents = Context->getParents(node);
+        for (const auto &sub_node : node_parents)
+        {
+          nodes.push(sub_node);
         }
       }
     }
-  };
-
-  int main(int argc, const char **argv)
-  {
-    CommonOptionsParser OptionsParser(argc, argv, MyToolCategory);
-    ClangTool Tool(OptionsParser.getCompilations(),
-                   OptionsParser.getSourcePathList());
-
-    labels_matcher Printer;
-    MatchFinder Finder;
-    Finder.addMatcher(LabelMatcher, &Printer);
-
-    return Tool.run(newFrontendActionFactory(&Finder).get());
   }
+};
+
+int main(int argc, const char **argv)
+{
+  CommonOptionsParser OptionsParser(argc, argv, MyToolCategory);
+  ClangTool Tool(OptionsParser.getCompilations(),
+                 OptionsParser.getSourcePathList());
+
+  labels_matcher Printer;
+  MatchFinder Finder;
+  Finder.addMatcher(LabelMatcher, &Printer);
+
+  return Tool.run(newFrontendActionFactory(&Finder).get());
+}
