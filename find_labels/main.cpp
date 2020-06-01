@@ -1,12 +1,13 @@
-#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 // Declares clang::SyntaxOnlyAction.
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 // Declares llvm::cl::extrahelp.
+#include "clang/AST/Stmt.h"
 #include "llvm/Support/CommandLine.h"
-
+#include <set>
 using namespace clang::tooling;
 using namespace llvm;
 using namespace clang;
@@ -24,56 +25,68 @@ static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 // A help message for this specific tool can be added afterwards.
 static cl::extrahelp MoreHelp("\nMore help text...\n");
 
-//match t = m_labels;
-auto LabelMatcher = cxxRecordDecl(
-		isDerivedFrom(hasName("Machine")),
-			hasMethod(cxxMethodDecl(
-				hasBody(compoundStmt(hasAnySubstatement(
-				declStmt(
-					hasSingleDecl(varDecl(hasInitializer(
-							cxxConstructExpr(
-						hasAnyArgument(ignoringParenImpCasts(memberExpr(member(hasName("m_labels"))))))
-					)))))))).bind("func"))).bind("labels");
+auto LabelMatcher = memberExpr(member(hasName("m_labels"))).bind("func");
 
-//match m_labels = t;
-auto LabelMatcher2 = 
-cxxRecordDecl(
-	isDerivedFrom(hasName("Machine")),
-	hasMethod(cxxMethodDecl(
-		hasBody(compoundStmt(
-			hasAnySubstatement(cxxOperatorCallExpr(
-				hasOverloadedOperatorName("="),
-				hasAnyArgument(ignoringParenImpCasts(
-					memberExpr(member(hasName("m_labels")))))))))).bind("func"))).bind("labels");
+std::set<std::string> func_names;
 
+class labels_matcher : public MatchFinder::MatchCallback
+{
+public:
+  void run(const MatchFinder::MatchResult &Result)
+  {
 
-class labels_matcher : public MatchFinder::MatchCallback {
-public :
- void run(const MatchFinder::MatchResult &Result) {
-	   
+    ASTContext *Context = Result.Context;
+    const MemberExpr *FS = Result.Nodes.getNodeAs<MemberExpr>("func");
+    // We do not want to convert header files!
+    if (!FS || !Context->getSourceManager().isWrittenInMainFile(FS->getLocStart()))
+      return;
 
-  ASTContext *Context = Result.Context;
-  const CXXMethodDecl *FS = Result.Nodes.getNodeAs<CXXMethodDecl>("func");
-  // We do not want to convert header files!
-  if (!FS || !Context->getSourceManager().isWrittenInMainFile(FS->getLocStart()))
-    return;
- 	const auto& SM = *Result.SourceManager;
-    const auto& Loc = FS->getLocStart();
-    llvm::outs() << SM.getFilename(Loc) << ":"
-                   << SM.getSpellingLineNumber(Loc) << ":"
-                   << SM.getSpellingColumnNumber(Loc) << "\n";}
-};
+    const auto &SM = Result.SourceManager;
+    const auto &Loc = FS->getLocStart();
+    auto ast_list = Context->getParents(*FS);
+    std::stack<clang::ast_type_traits::DynTypedNode> nodes;
+    for (auto &&ast : ast_list)
+    {
+      nodes.push(ast);
+    }
+    while (!nodes.empty())
+    {
+      auto &&node = nodes.top();
+      nodes.pop();
+      if (auto method = node.get<CXXMethodDecl>())
+      {
+        std::string func_name = method->getNameAsString();
+        auto node_parents = Context->getParents(node);
+        std::string record_name = method->getParent()->getNameAsString();
 
+        func_name = record_name + "::" + func_name;
+        if (func_names.find(func_name) == func_names.end())
+        {
+          func_names.insert(func_name);
+          llvm::outs() << func_name << "\n";
+          break;
+        }
+        else
+        {
+          auto node_parents = Context->getParents(node);
+          for (const auto &sub_node : node_parents)
+          {
+            nodes.push(sub_node);
+          }
+        }
+      }
+    }
+  };
 
-int main(int argc, const char **argv) {
-  CommonOptionsParser OptionsParser(argc, argv, MyToolCategory);
-  ClangTool Tool(OptionsParser.getCompilations(),
-                 OptionsParser.getSourcePathList());
+  int main(int argc, const char **argv)
+  {
+    CommonOptionsParser OptionsParser(argc, argv, MyToolCategory);
+    ClangTool Tool(OptionsParser.getCompilations(),
+                   OptionsParser.getSourcePathList());
 
-  labels_matcher Printer;
-  MatchFinder Finder;
-  Finder.addMatcher(LabelMatcher, &Printer);
-  Finder.addMatcher(LabelMatcher2, &Printer);
+    labels_matcher Printer;
+    MatchFinder Finder;
+    Finder.addMatcher(LabelMatcher, &Printer);
 
-  return Tool.run(newFrontendActionFactory(&Finder).get());
-}
+    return Tool.run(newFrontendActionFactory(&Finder).get());
+  }
