@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(find_labels)
+project(multiclass)
 
 find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
@@ -12,9 +12,9 @@ add_definitions(${LLVM_DEFINITIONS})
 link_directories(${LLVM_LIBRARY_DIRS})
 llvm_map_components_to_libnames(llvm_libs x86asmparser bitreader support mc option profiledata)
 
-add_executable(find_labels multiclass.cpp)
-target_include_directories(find_labels PRIVATE ${LLVM_INCLUDE_DIRS})
-target_link_libraries(find_labels PRIVATE
+add_executable(multiclass multiclass.cpp)
+target_include_directories(multiclass PRIVATE ${LLVM_INCLUDE_DIRS})
+target_link_libraries(multiclass PRIVATE
    clangFrontend
   clangSerialization
   clangDriver
@@ -30,5 +30,5 @@ target_link_libraries(find_labels PRIVATE
   clangBasic
   clangASTMatchers
     ${llvm_libs})
-set_target_properties(find_labels PROPERTIES COMPILE_FLAGS -fno-rtti)
-target_compile_options(find_labels PRIVATE -g)
+set_target_properties(multiclass PROPERTIES COMPILE_FLAGS -fno-rtti)
+target_compile_options(multiclass PRIVATE -g)
