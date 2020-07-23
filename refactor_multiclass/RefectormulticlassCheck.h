@@ -37,6 +37,9 @@ namespace clang
         std::string getFunctionName(const CXXMethodDecl *method);
 
         void changeAllSharedPtrToConst(const CXXMethodDecl *method);
+
+        void changeCorrespondMethod(const CXXMethodDecl *method,
+                                    const SourceManager &SM);
         std::unordered_set<std::string> funcRefactored;
       };
 

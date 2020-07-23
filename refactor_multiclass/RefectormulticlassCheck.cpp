@@ -9,7 +9,7 @@
 #include "RefectormulticlassCheck.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
-
+#include "clang/Basic/SourceLocation.h"
 using namespace clang::ast_matchers;
 
 namespace clang
@@ -19,6 +19,21 @@ namespace clang
 		namespace misc
 		{
 
+			void RefectormulticlassCheck::changeCorrespondMethod(
+				const CXXMethodDecl *method, const SourceManager &SM)
+			{
+
+				auto MatchedDecl =
+					method->getCorrespondingMethodDeclaredInClass(method->getParent());
+				auto loc =
+					MatchedDecl->getTypeSourceInfo()->getTypeLoc().getAs<FunctionTypeLoc>();
+				// MatchedDecl->getBeginLoc().dump(SM);
+				diag(MatchedDecl->getBeginLoc(), "function %0 should add argument")
+					<< MatchedDecl->getNameAsString();
+				diag(MatchedDecl->getEndLoc(), "add labs argument", DiagnosticIDs::Note)
+					<< FixItHint::CreateInsertion(loc.getLocalSourceRange().getEnd(),
+												  ", const std::shared_ptr<Labels>& labs");
+			}
 			void RefectormulticlassCheck::changeAllSharedPtrToConst(
 				const CXXMethodDecl *method)
 			{
@@ -27,11 +42,25 @@ namespace clang
 					if (StringRef((*parm)->getType().getAsString())
 							.startswith("std::shared_ptr<"))
 					{
+						auto parmEndLoc = (*parm)->getEndLoc();
+						if ((*parm)->hasDefaultArg())
+						{
+
+							auto range = (*parm)->getDefaultArgRange();
+							auto typeRange =
+								(*parm)->getTypeSourceInfo()->getTypeLoc().getSourceRange();
+							diag(range.getBegin(), "remove %0 default argument")
+								<< (*parm)->getNameAsString();
+							diag(range.getBegin(), "remove default argument", DiagnosticIDs::Note)
+								<< FixItHint::CreateRemoval(SourceRange(
+									   typeRange.getEnd().getLocWithOffset(1), range.getEnd()));
+							parmEndLoc = typeRange.getEnd().getLocWithOffset(1);
+						}
 						diag((*parm)->getEndLoc(), "add const reference")
 							<< (*parm)->getNameAsString();
 						diag((*parm)->getBeginLoc(), "remove labs argument", DiagnosticIDs::Note)
 							<< FixItHint::CreateInsertion((*parm)->getBeginLoc(), "const ")
-							<< FixItHint::CreateInsertion((*parm)->getEndLoc(), "&");
+							<< FixItHint::CreateInsertion(parmEndLoc, "&");
 					}
 				}
 			}
@@ -86,10 +115,16 @@ namespace clang
 									   ofClass(isSameOrDerivedFrom("MulticlassMachine")));
 
 				auto call_methods = cxxMemberCallExpr(callee(methods));
+
+				auto Initializer = cxxConstructorDecl(
+					hasAnyConstructorInitializer(
+						cxxCtorInitializer(isBaseInitializer()).bind("init")),
+					ofClass(isDerivedFrom("MulticlassMachine")));
 				Finder->addMatcher(labels.bind("addLabels"), this);
 				Finder->addMatcher(constructor.bind("removeLabels"), this);
 				Finder->addMatcher(methods.bind("addLabels"), this);
 				Finder->addMatcher(call_methods.bind("addLabels"), this);
+				Finder->addMatcher(Initializer, this);
 			}
 
 			void RefectormulticlassCheck::check(const MatchFinder::MatchResult &Result)
@@ -109,6 +144,7 @@ namespace clang
 						Result.Nodes.getNodeAs<CXXMethodDecl>("addLabels"))
 				{
 					changeAllSharedPtrToConst(MatchedDecl);
+					const auto &SM = *(Result.SourceManager);
 					auto loc =
 						MatchedDecl->getTypeSourceInfo()->getTypeLoc().getAs<FunctionTypeLoc>();
 					// llvm::outs()<<MatchedDecl->size_overridden_methods ()<<"\n";
@@ -118,6 +154,15 @@ namespace clang
 						// llvm::outs() << (*methods)->getParent()->getNameAsString() << "\n";
 						traverseAllParentFunction(*methods);
 					}
+					if (auto redecl = MatchedDecl->getPreviousDecl())
+					{
+						if (auto res = cast_or_null<CXXMethodDecl>(redecl))
+						{
+							changeCorrespondMethod(res, SM);
+							changeAllSharedPtrToConst(res);
+						}
+					}
+
 					std::string funcName = getFunctionName(MatchedDecl);
 					if (funcRefactored.find(funcName) == funcRefactored.end())
 					{
@@ -167,12 +212,13 @@ namespace clang
 					}
 					else
 					{
-						for (auto parm = MatchedDecl->param_begin();
-							 parm != MatchedDecl->param_end(); ++parm)
+						for (auto parm : MatchedDecl->parameters())
 						{
-							if ((*parm)->getType().getAsString() == "std::shared_ptr<Labels>")
+							if (parm->getType().getAsString() == "std::shared_ptr<Labels>")
 							{
-								SourceRange loc((*parm)->getSourceRange());
+								auto loc = SourceRange(parm->getBeginLoc(), parm->getEndLoc());
+								const auto &SM = *(Result.SourceManager);
+								loc.dump(SM);
 								diag(MatchedDecl->getEndLoc(), "should remove argument")
 									<< MatchedDecl->getNameAsString();
 								diag(MatchedDecl->getEndLoc(), "remove labs argument",
@@ -182,7 +228,32 @@ namespace clang
 						}
 					}
 				}
-			}
+				if (const auto *MatchedDecl =
+						Result.Nodes.getNodeAs<CXXCtorInitializer>("init"))
+				{
+					if (auto res = dyn_cast<ExprWithCleanups>(MatchedDecl->getInit()))
+					{
+						for (auto child : res->children())
+						{
+							if (auto expr = dyn_cast<CXXConstructExpr>(child))
+							{
+								for (auto e : expr->arguments())
+								{
+									if (e->getType().getAsString() == "std::shared_ptr<Labels>")
+									{
+										auto loc = e->getSourceRange();
+
+										diag(loc.getBegin(), "should remove argument");
+										diag(loc.getBegin(), "remove labs argument", DiagnosticIDs::Note)
+											<< FixItHint::CreateRemoval(loc);
+									}
+								}
+							}
+						}
+					}
+				}
+
+			} // namespace misc
 
 		} // namespace misc
 	}	  // namespace tidy
